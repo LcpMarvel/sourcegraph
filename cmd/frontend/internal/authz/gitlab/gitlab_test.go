@@ -2,6 +2,7 @@ package gitlab
 
 import (
 	"context"
+	"encoding/json"
 	"net/url"
 	"reflect"
 	"strconv"
@@ -242,13 +243,10 @@ func Test_GitLab_RepoPerms(t *testing.T) {
 
 	tests := []GitLab_RepoPerms_Test{
 		{
-			description: "matchPattern",
+			description: "with match pattern",
 			op: GitLabAuthzProviderOp{
-				BaseURL:         mustURL(t, "https://gitlab.mine"),
-				AuthnConfigID:   auth.ProviderConfigID{ID: "https://gitlab.mine/", Type: gitlab.GitLabServiceType},
-				SudoToken:       "valid-sudo-token",
-				RepoPathPattern: "{host}/{pathWithNamespace}",
-				MatchPattern:    "gitlab.mine/*",
+				BaseURL:      mustURL(t, "https://gitlab.mine"),
+				MatchPattern: "gitlab.mine/*",
 			},
 			calls: []GitLab_RepoPerms_call{
 				{
@@ -300,7 +298,122 @@ func Test_GitLab_RepoPerms(t *testing.T) {
 				},
 			},
 		},
-		// TODO
+		{
+			description: "special repo path pattern",
+			op: GitLabAuthzProviderOp{
+				BaseURL:         mustURL(t, "https://gitlab.mine"),
+				RepoPathPattern: "{host}-{pathWithNamespace}",
+			},
+			calls: []GitLab_RepoPerms_call{
+				{
+					description: "bl user can read gitlab.mine-bl/repo-1",
+					account:     acct(1, "gitlab", "https://gitlab.mine/", "101"),
+					repos: map[authz.Repo]struct{}{
+						authz.Repo{
+							URI:              "gitlab.mine/bl/repo-1",
+							ExternalRepoSpec: api.ExternalRepoSpec{ID: "bl/repo-1", ServiceType: "gitlab", ServiceID: "https://gitlab.mine/"},
+						}: struct{}{},
+						authz.Repo{
+							URI:              "gitlab.mine-bl/repo-1",
+							ExternalRepoSpec: api.ExternalRepoSpec{ID: "bl/repo-1", ServiceType: "gitlab", ServiceID: "https://gitlab.mine/"},
+						}: struct{}{},
+					},
+					expPerms: map[api.RepoURI]map[authz.Perm]bool{
+						"gitlab.mine-bl/repo-1": map[authz.Perm]bool{authz.Read: true},
+
+						// external ID matches, but is omitted, because repo URI doesn't match RepoPathPattern
+						"gitlab.mine/bl/repo-1": map[authz.Perm]bool{},
+					},
+				},
+			},
+		},
+		{
+			description: "without match pattern",
+			op: GitLabAuthzProviderOp{
+				BaseURL: mustURL(t, "https://gitlab.mine"),
+			},
+			calls: []GitLab_RepoPerms_call{
+				{
+					description: "bl user can read bl/repo-1",
+					account:     acct(1, "gitlab", "https://gitlab.mine/", "101"),
+					repos: map[authz.Repo]struct{}{
+						authz.Repo{
+							URI:              "gitlab.mine/bl/repo-1",
+							ExternalRepoSpec: api.ExternalRepoSpec{ID: "bl/repo-1", ServiceType: "gitlab", ServiceID: "https://gitlab.mine/"},
+						}: struct{}{},
+					},
+					expPerms: map[api.RepoURI]map[authz.Perm]bool{
+						"gitlab.mine/bl/repo-1": map[authz.Perm]bool{authz.Read: true},
+					},
+				},
+				{
+					description: "bl user has expected perms",
+					account:     acct(1, gitlab.GitLabServiceType, "https://gitlab.mine/", "101"),
+					repos: map[authz.Repo]struct{}{
+						authz.Repo{URI: "gitlab.mine/bl/repo-1", ExternalRepoSpec: extRSpec(gitlab.GitLabServiceType, "https://gitlab.mine/", "bl/repo-1")}:   struct{}{},
+						authz.Repo{URI: "gitlab.mine/bl/repo-2", ExternalRepoSpec: extRSpec(gitlab.GitLabServiceType, "https://gitlab.mine/", "bl/repo-2")}:   struct{}{},
+						authz.Repo{URI: "gitlab.mine/bl/repo-3", ExternalRepoSpec: extRSpec(gitlab.GitLabServiceType, "https://gitlab.mine/", "bl/repo-3")}:   struct{}{},
+						authz.Repo{URI: "gitlab.mine/kl/repo-1", ExternalRepoSpec: extRSpec(gitlab.GitLabServiceType, "https://gitlab.mine/", "kl/repo-1")}:   struct{}{},
+						authz.Repo{URI: "gitlab.mine/kl/repo-2", ExternalRepoSpec: extRSpec(gitlab.GitLabServiceType, "https://gitlab.mine/", "kl/repo-2")}:   struct{}{},
+						authz.Repo{URI: "gitlab.mine/kl/repo-3", ExternalRepoSpec: extRSpec(gitlab.GitLabServiceType, "https://gitlab.mine/", "kl/repo-3")}:   struct{}{},
+						authz.Repo{URI: "gitlab.mine/org/repo-1", ExternalRepoSpec: extRSpec(gitlab.GitLabServiceType, "https://gitlab.mine/", "org/repo-1")}: struct{}{},
+						authz.Repo{URI: "gitlab.mine/org/repo-2", ExternalRepoSpec: extRSpec(gitlab.GitLabServiceType, "https://gitlab.mine/", "org/repo-2")}: struct{}{},
+						authz.Repo{URI: "gitlab.mine/org/repo-3", ExternalRepoSpec: extRSpec(gitlab.GitLabServiceType, "https://gitlab.mine/", "org/repo-3")}: struct{}{},
+						authz.Repo{URI: "bl/a", ExternalRepoSpec: extRSpec(gitlab.GitLabServiceType, "https://gitlab.mine/", "bl/a")}:                         struct{}{},
+					},
+					expPerms: map[api.RepoURI]map[authz.Perm]bool{
+						"gitlab.mine/bl/repo-1":  map[authz.Perm]bool{authz.Read: true},
+						"gitlab.mine/bl/repo-2":  map[authz.Perm]bool{authz.Read: true},
+						"gitlab.mine/bl/repo-3":  map[authz.Perm]bool{authz.Read: true},
+						"gitlab.mine/kl/repo-1":  map[authz.Perm]bool{},
+						"gitlab.mine/kl/repo-2":  map[authz.Perm]bool{},
+						"gitlab.mine/kl/repo-3":  map[authz.Perm]bool{},
+						"gitlab.mine/org/repo-1": map[authz.Perm]bool{authz.Read: true},
+						"gitlab.mine/org/repo-2": map[authz.Perm]bool{authz.Read: true},
+						"gitlab.mine/org/repo-3": map[authz.Perm]bool{authz.Read: true},
+						"bl/a":                   map[authz.Perm]bool{authz.Read: true},
+					},
+				},
+				// {
+				// 	description: "kl user has expected perms",
+				// 	account:     acct(1, gitlab.GitLabServiceType, "https://gitlab.mine/", "101"),
+				// 	repos: map[authz.Repo]struct{}{
+				// 		authz.Repo{URI: "gitlab.mine/bl/repo-1"}:  struct{}{},
+				// 		authz.Repo{URI: "gitlab.mine/bl/repo-2"}:  struct{}{},
+				// 		authz.Repo{URI: "gitlab.mine/bl/repo-3"}:  struct{}{},
+				// 		authz.Repo{URI: "gitlab.mine/kl/repo-1"}:  struct{}{},
+				// 		authz.Repo{URI: "gitlab.mine/kl/repo-2"}:  struct{}{},
+				// 		authz.Repo{URI: "gitlab.mine/kl/repo-3"}:  struct{}{},
+				// 		authz.Repo{URI: "gitlab.mine/org/repo-1"}: struct{}{},
+				// 		authz.Repo{URI: "gitlab.mine/org/repo-2"}: struct{}{},
+				// 		authz.Repo{URI: "gitlab.mine/org/repo-3"}: struct{}{},
+				// 		authz.Repo{URI: "gitlab.mine/bl/a"}:       struct{}{},
+				// 		authz.Repo{URI: "a", ExternalRepoSpec: api.ExternalRepoSpec{
+				// 			ServiceType: gitlab.GitLabServiceType,
+				// 			ServiceID:   "https://gitlab.mine/",
+				// 		}}: struct{}{},
+				// 	},
+				// 	expPerms: map[api.RepoURI]map[authz.Perm]bool{
+				// 		"gitlab.mine/bl/repo-1":  map[authz.Perm]bool{},
+				// 		"gitlab.mine/bl/repo-2":  map[authz.Perm]bool{},
+				// 		"gitlab.mine/bl/repo-3":  map[authz.Perm]bool{},
+				// 		"gitlab.mine/kl/repo-1":  map[authz.Perm]bool{authz.Read: true},
+				// 		"gitlab.mine/kl/repo-2":  map[authz.Perm]bool{authz.Read: true},
+				// 		"gitlab.mine/kl/repo-3":  map[authz.Perm]bool{authz.Read: true},
+				// 		"gitlab.mine/org/repo-1": map[authz.Perm]bool{authz.Read: true},
+				// 		"gitlab.mine/org/repo-2": map[authz.Perm]bool{authz.Read: true},
+				// 		"gitlab.mine/org/repo-3": map[authz.Perm]bool{authz.Read: true},
+				// 		"gitlab.mine/bl/a":       map[authz.Perm]bool{authz.Read: true},
+				// 		"a":                      map[authz.Perm]bool{authz.Read: true},
+				// 	},
+				// },
+				// {
+				// 	description: "bl user has no perms when repos lack matching external repo specs",
+				// },
+			},
+		},
+		// { description: "userNativeUsername"
+		// { description: "without match pattern",
 	}
 	for _, test := range tests {
 		test.run(t)
@@ -342,7 +455,7 @@ func (g GitLab_RepoPerms_Test) run(t *testing.T) {
 				continue
 			}
 			if !reflect.DeepEqual(perms, c.expPerms) {
-				t.Errorf("expected %+v, but got %+v", c.expPerms, perms)
+				t.Errorf("expected %s, but got %s", asJSON(t, c.expPerms), asJSON(t, perms))
 			}
 		}
 	}
@@ -925,6 +1038,14 @@ func acct(userID int32, serviceType, serviceID, accountID string) *extsvc.Extern
 	}
 }
 
+func extRSpec(serviceType, serviceID, id string) api.ExternalRepoSpec {
+	return api.ExternalRepoSpec{
+		ServiceType: serviceType,
+		ServiceID:   serviceID,
+		ID:          id,
+	}
+}
+
 type mockAuthnProvider struct {
 	configID  auth.ProviderConfigID
 	serviceID string
@@ -952,4 +1073,12 @@ func mustURL(t *testing.T, u string) *url.URL {
 		t.Fatal(err)
 	}
 	return parsed
+}
+
+func asJSON(t *testing.T, v interface{}) string {
+	b, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
 }

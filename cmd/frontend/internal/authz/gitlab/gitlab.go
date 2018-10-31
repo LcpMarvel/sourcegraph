@@ -28,33 +28,19 @@ type pcache interface {
 	Delete(key string)
 }
 
+// GitLabAuthzProvider is an implementation of AuthzProvider that provides repository permissions as
+// determined from a GitLab instance API. For documentation of specific fields, see the docstrings
+// of GitLabAuthzProviderOp.
 type GitLabAuthzProvider struct {
-	client          *gitlab.Client
-	clientURL       *url.URL
-	codeHost        *gitlab.CodeHost
-	repoPathPattern string
-	cache           pcache
-
-	// matchPattern, if non-empty, should be a string that may contain a prefix "*/" or suffix "/*".
-	// If it satisfies neither, *no* repositories will be matched.  If empty, we match on the value
-	// of ExternalRepoSpec (fetched from the DB).
-	matchPattern string
-
-	// gitlabProvider is the string that should be passed to the `provider` URL query parameter when
-	// looking up the user via the GitLab API. It is the identifier to GitLab of the same
-	// authenetication provider as is identified by authnConfigID
-	gitlabProvider string
-
-	// authnConfigID is the config identifier that identifies the authentication provider to use
-	// when no GitLab external account exists. It corresponds to the auth.ProviderInfo.ConfigID
-	// field.
-	authnConfigID auth.ProviderConfigID
-
-	// userNativeUsername, if true, makes this provider compute the correspondence to GitLab user
-	// using the Sourcegraph username. This is highly unsafe (as the username is mutable and not
-	// intrinsically tied ot the GitLab username) and should only be used in development/testing
-	// environments.
+	client            *gitlab.Client
+	clientURL         *url.URL
+	codeHost          *gitlab.CodeHost
+	repoPathPattern   string
+	matchPattern      string
+	gitlabProvider    string
+	authnConfigID     auth.ProviderConfigID
 	useNativeUsername bool
+	cache             pcache
 }
 
 var _ authz.AuthzProvider = ((*GitLabAuthzProvider)(nil))
@@ -65,19 +51,43 @@ type cacheVal struct {
 }
 
 type GitLabAuthzProviderOp struct {
-	BaseURL        *url.URL
-	AuthnConfigID  auth.ProviderConfigID
+	// BaseURL is the URL of the GitLab instance.
+	BaseURL *url.URL
+
+	// AuthnConfigID identifies the authn provider to use to lookup users on the GitLab instance.
+	// This should be the authn provider that's used to sign into the GitLab instance.
+	AuthnConfigID auth.ProviderConfigID
+
+	// GitLabProvider is the id of the authn provider to GitLab. It will be used in the
+	// `users?extern_uid=$uid&provider=$provider` API query.
 	GitLabProvider string
 
-	// SudoToken is an access tokens with sudo *and* api scope.
+	// SudoToken is an access token with sudo *and* api scope.
 	//
 	// 🚨 SECURITY: This value contains secret information that must not be shown to non-site-admins.
-	SudoToken         string
-	RepoPathPattern   string
-	MatchPattern      string
-	CacheTTL          time.Duration
+	SudoToken string
+
+	// RepoPathPattern describes the pattern used to construct the Sourcegraph repo path (i.e.,
+	// "repo URI") from the GitLab host and pathWithNamespace values. E.g.,
+	// "{host}/{pathWithNamespace}".
+	RepoPathPattern string
+
+	// MatchPattern is a prefix and/or suffix matching string (suffixed with "/*" or prefixed with
+	// "*/", respectively) that matchces repositories that belong to the GitLab instance. This is
+	// optional. If empty, the `service_type` and `service_id` values of repo rows in the DB will be
+	// used.
+	MatchPattern string
+
+	// CacheTTL is the TTL of cached permissions lists from the GitLab API.
+	CacheTTL time.Duration
+
+	// UseNativeUsername, if true, maps Sourcegraph users to GitLab users using username equivalency
+	// instead of the authn provider user ID. This is *very* insecure (Sourcegraph usernames can be
+	// changed at the user's will) and should only be used in development environments.
 	UseNativeUsername bool
 
+	// MockCache, if non-nil, replaces the default Redis-based cache with the supplied cache mock.
+	// Should only be used in tests.
 	MockCache pcache
 }
 
@@ -334,6 +344,8 @@ func (p *GitLabAuthzProvider) fetchUserAccessList(ctx context.Context, glUserID 
 
 	accessibleRepos := make(map[api.RepoURI]struct{})
 	for _, proj := range allProjs {
+		// NEXT
+		// TODO: use the account ID of the Repo, instead of needing repoPathPattern here
 		repoURI := reposource.GitLabRepoURI(p.repoPathPattern, p.clientURL.Hostname(), proj.PathWithNamespace)
 		accessibleRepos[repoURI] = struct{}{}
 	}
